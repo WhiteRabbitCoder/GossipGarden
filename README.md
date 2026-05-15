@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="frontendGossipGarden/docs/icon.png" width="140" alt="Gossip Garden logo"/>
+  <img src="docs/icon.png" width="140" alt="Gossip Garden logo"/>
   <h1>Gossip Garden</h1>
   <p><em>Your plants have something to say.</em></p>
 
