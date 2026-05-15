@@ -1,0 +1,6 @@
+[submodule "frontendGossipGarden"]
+	path = frontendGossipGarden
+	url = git@github.com:WhiteRabbitCoder/FrontendGossipGarden.git
+[submodule "backendGossipGarden"]
+	path = backendGossipGarden
+	url = git@github.com:Danieloid3/BackendGossipGarden.git
