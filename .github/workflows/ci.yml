@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main, qa]
+  pull_request:
+    branches: [main, qa]
+
+jobs:
+  flutter-ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+        working-directory: frontendGossipGarden/src
+
+      - name: Analyze
+        run: flutter analyze
+        working-directory: frontendGossipGarden/src
+
+      - name: Run tests
+        run: flutter test
+        working-directory: frontendGossipGarden/src
