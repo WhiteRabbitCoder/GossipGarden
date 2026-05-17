@@ -48,7 +48,17 @@ pytest tests/test_chat.py       # single file
 pytest -k "test_health_ok"      # single test by name
 ```
 
-`pytest.ini` sets `asyncio_mode = auto` and `testpaths = tests`. Integration tests (class `TestIntegracion`) hit a real server at `:8000` and require Ollama running — they auto-skip if the backend isn't up.
+`pytest.ini` sets `asyncio_mode = auto`, `testpaths = tests`, and defines custom marker `dbschema` for tests requiring a live Postgres with pgvector. Integration tests (class `TestIntegracion`) hit a real server at `:8000` — they auto-skip if the backend isn't up.
+
+### CI (GitHub Actions)
+
+**Backend** (`.github/workflows/ci.yml`): `uv` for deps, Python 3.12, two jobs:
+1. **Unit tests** — `pytest -m "not dbschema"` with mocked externals + coverage.
+2. **DB schema validation** — ephemeral `pgvector/pgvector:pg16`; applies `schema.sql` from scratch and `migrations.sql` over legacy schema; runs `pytest -m dbschema`.
+
+**Frontend** (`.github/workflows/ci.yml`): Flutter 3.x stable, two jobs:
+1. **Analyze** — `flutter analyze --fatal-infos`.
+2. **Test** — `flutter test --coverage` with 40% threshold on business logic (excludes screens/widgets/main).
 
 ---
 
@@ -61,25 +71,38 @@ pytest -k "test_health_ok"      # single test by name
 | Supabase (PostgreSQL) | `supabase-py` + `SUPABASE_SERVICE_ROLE_KEY` | Relational data: users, plants, species (+ 3 child tables), sensors, events, friendships, monthly_metrics |
 | Firebase Firestore | `firebase-admin` | IoT telemetry (`sensor_readings` with 30-day TTL), chat logs, and `plant_identifications` metadata |
 | Firebase Storage | `firebase-admin` (`storage`) | Plant photos (compressed JPEG, max 1920px) — paths stored in `plants.photo_storage_path` |
-| Redis (async) | `redis` | Chat history cache (key `chat:{user_id}:{plant_id}`, 2h TTL) |
+| Redis (async) | `redis` | Chat history cache (key `chat:{user_id}:{plant_id}`, 2h TTL) + summary cache (key `chat:summary:{user_id}:{plant_id}`, 7d TTL) |
 | pgvector (en Supabase) | `supabase-py` RPC | `botanical_chunks` con embeddings `text-embedding-3-small` (1536d) para RAG |
 
 **Request flow:**
 1. `app/main.py` — FastAPI app with lifespan that validates all three DB connections and starts MQTT on startup.
-2. `app/api/v1/api.py` — router that mounts `auth`, `plants`, `sensors`, `identification` at `/api/v1`.
+2. `app/api/v1/api.py` — router that mounts `auth`, `plants`, `sensors`, `identification`, `chat` at `/api/v1`.
 3. `app/core/security.py` — `get_current_user` dependency: validates Supabase-issued JWTs via JWKS (ES256, audience `"authenticated"`), returns `user_id` UUID string.
 4. `app/core/config.py` — `pydantic-settings` `Settings` object; all config comes from `.env`.
 5. **Plant identification** (`app/api/v1/endpoints/identification.py`): `POST /api/v1/identify` receives multipart image + optional lat/lon, decides by confidence threshold (plant.id probability): `needs_more_photos` (<0.25) / `needs_user_selection` (0.25–0.75, top 3) / `completed` (>0.75, runs full pipeline). `POST /api/v1/species/from-candidate` completes the pipeline when the user selects from top-3. Full pipeline: plant.id → GBIF → RAG (pgvector) → OpenAI gpt-4o Structured Output → Supabase. Cached by `scientific_name` to avoid repeat paid API calls. On `completed`, the image is compressed (Pillow, max 1920px, JPEG q=85) and uploaded to Firebase Storage via `BackgroundTasks` (zero latency impact); `photo_storage_path` is returned in the response so the client can link the photo when creating the plant. `PUT /api/v1/plants/{plant_id}/photo` allows updating a plant's photo without re-identifying.
 
-**LLM chat** (`app/api/v1/endpoints/chat.py`):
-- Calls a local **Ollama** instance (`OLLAMA_URL`, default `http://localhost:11434`) with model `MODEL_NAME` (default `gemma4:e4b`).
-- System prompt built from the plant's `species.ai_personality_prompt`, nickname, and health.
-- History stored in Redis; last 10 turns included in each request.
-- Both blocking (`POST /{plant_id}`) and streaming (`POST /{plant_id}/stream`) SSE endpoints exist.
+**LLM chat** (`app/api/v1/endpoints/chat.py` + `app/services/chat_service.py`):
+- Calls **OpenAI** via `AsyncOpenAI` with model `OPENAI_CHAT_MODEL` (default `gpt-4o`).
+- Two-level memory:
+  - **Redis**: short-term cache — history (2h TTL), summaries (7d TTL).
+  - **Firestore**: long-term permanent storage — `plants/{plant_id}/chat_logs/{user_id}` (messages), `plants/{plant_id}/chat_meta/{user_id}` (compacted summaries).
+- Context compaction (`app/services/summarizer_service.py`): when history exceeds 3000 tokens, older messages are summarized by GPT and the summary is injected into the system prompt. Last 6 messages (3 turns) always preserved intact.
+- Guardrails: strict persona enforcement — the plant cannot discuss politics, programming, or off-topic subjects; always redirects to plant-related topics.
+- Injects latest sensor data (from Firestore) into the system prompt as real-time plant status.
+- Last 10 turn pairs max in active history.
+- Endpoints:
+  - `POST /api/v1/chat/{plant_id}` — blocking chat.
+  - `GET /api/v1/chat/{plant_id}/history` — conversation history.
 
 **MQTT** (`app/core/mqtt.py`):
 - Disabled by default (`MQTT_ENABLED=false`). When enabled, subscribes to `plantas/+/sensores`.
 - Messages must include `plant_id` in the JSON payload; writes a `sensor_readings` doc to Firestore under `plants/{plant_id}/sensor_readings`.
+
+**Health scoring** (`app/services/health_service.py`):
+- Called on sensor data ingestion. Fetches `species_care_profiles` for the plant's species.
+- Calculates weighted parameter scores (temperature, light, air humidity, soil humidity) using the care profile's `weight_*` fields (defaults to equal 0.25 each).
+- Status thresholds: >=80 → "healthy", >=50 → "warning", <50 → "critical".
+- Updates `plants.health_score` and `plants.health_status` in Supabase.
 
 **Firebase init** (`app/db/firebase.py`): if `FIREBASE_CREDENTIALS_JSON` env var is set (Railway/PaaS), it parses the JSON inline; otherwise falls back to `FIREBASE_CREDENTIALS_PATH` file. If `FIREBASE_STORAGE_BUCKET` is set, Storage is initialized at the same time (format: `project-id.appspot.com` or `project-id.firebasestorage.app`, no `gs://` prefix). Missing credentials log a warning and disable Firestore gracefully.
 
@@ -126,7 +149,8 @@ events:                  event_id (UUID PK), plant_id (FK), type (enum: alert/in
 friendships:             id (UUID PK), user_low_id (FK), user_high_id (FK), requested_by_id (FK),
                          status (enum: pending/accepted/blocked), created_at
 monthly_metrics:         id (UUID PK), plant_id (FK), month, year, avg_temperature,
-                         avg_soil_humidity, avg_air_humidity, avg_light
+                         avg_soil_humidity, avg_air_humidity, avg_light,
+                         avg_health_score (float), health_status_majority (varchar)
 species_legacy:          backup post-migration — DROP after 30-day validation period
 ```
 
