@@ -130,7 +130,8 @@ species_care_profiles:   id (UUID PK), species_id (FK), min/max_temp_c, min/max_
                          care_data_source, proposal_confidence, needs_review (bool),
                          reasoning_summary, completed_at,
                          weight_light/weight_soil_humidity/weight_air_humidity/weight_temperature (FLOAT nullable, 0–1, suma≈1.0),
-                         sensitivity_light/sensitivity_soil_humidity/sensitivity_air_humidity/sensitivity_temperature (TEXT nullable: 'high'|'medium'|'low')
+                         sensitivity_light/sensitivity_soil_humidity/sensitivity_air_humidity/sensitivity_temperature (TEXT nullable: 'high'|'medium'|'low'),
+                         eval_interval_temp_min/eval_interval_light_min/eval_interval_air_hum_min/eval_interval_soil_hum_min (INTEGER NOT NULL, ≥30 min)
 species_ai_content:      id (UUID PK), species_id (FK), ai_personality_prompt, care_summary,
                          care_tips (JSONB), fun_facts (JSONB), faq (JSONB),
                          language, llm_model, generated_at  — UNIQUE (species_id, language)
@@ -162,9 +163,17 @@ See `frontendGossipGarden/CLAUDE.md` for full details. Quick reference:
 
 ```bash
 cd frontendGossipGarden/src
+cp .env.example .env   # rellenar SUPABASE_ANON_KEY y GOOGLE_CLIENT_ID
 flutter pub get
-flutter analyze
-flutter test
-flutter run --dart-define=BACKEND_TARGET=local   # → http://10.0.2.2:8000 (Android emulator)
-flutter run --dart-define=BACKEND_TARGET=prod    # → Railway production
+
+make dev-web       # Chrome, backend local (localhost:8000)
+make prod-web      # Chrome, backend Railway
+make prod-android  # Android, backend Railway
+make samsung       # Samsung SM S721B, backend Railway
+make help          # ver todos los targets disponibles
+
+make analyze       # flutter analyze
+make test          # flutter test --coverage
 ```
+
+Los secretos de auth van en `src/.env` (gitignored). Ver `src/.env.example` para la estructura.
