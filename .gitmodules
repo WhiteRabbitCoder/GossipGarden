@@ -4,3 +4,9 @@
 [submodule "backendGossipGarden"]
 	path = backendGossipGarden
 	url = git@github.com:Danieloid3/BackendGossipGarden.git
+[submodule "LandingGossipGarden"]
+	path = LandingGossipGarden
+	url = git@github.com:WhiteRabbitCoder/LandingGossipGarden.git
+[submodule "gossip-garden-presentation"]
+	path = gossip-garden-presentation
+	url = git@github.com:WhiteRabbitCoder/gossip-garden-presentation.git
